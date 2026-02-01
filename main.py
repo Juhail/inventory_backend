@@ -32,6 +32,34 @@ app.add_middleware(
     allow_headers=["*"],
 )
 
+# ============================================================================
+# DEBUG: CHECK ALL ENVIRONMENT VARIABLES
+# ============================================================================
+logger.info("=" * 80)
+logger.info("ENVIRONMENT VARIABLES CHECK")
+logger.info("=" * 80)
+
+# Check for MONGODB_URI specifically
+mongodb_uri_value = os.getenv("MONGODB_URI")
+logger.info(f"MONGODB_URI exists: {mongodb_uri_value is not None}")
+
+if mongodb_uri_value:
+    # Show only first 20 chars and last 20 chars (hide password)
+    if len(mongodb_uri_value) > 40:
+        masked = mongodb_uri_value[:20] + "..." + mongodb_uri_value[-20:]
+    else:
+        masked = "***"
+    logger.info(f"MONGODB_URI value (masked): {masked}")
+else:
+    logger.error("MONGODB_URI is NOT SET!")
+    # List all env vars that contain "MONGO" or "URI"
+    logger.info("Checking for similar environment variables:")
+    for key in os.environ:
+        if "MONGO" in key.upper() or "URI" in key.upper():
+            logger.info(f"  Found: {key}")
+
+logger.info("=" * 80)
+
 # MongoDB Connection
 MONGODB_URI = os.getenv("MONGODB_URI")
 
@@ -39,22 +67,23 @@ if not MONGODB_URI:
     logger.error("=" * 80)
     logger.error("CRITICAL: MONGODB_URI environment variable is NOT set!")
     logger.error("Please set MONGODB_URI in Render dashboard → Environment tab")
+    logger.error("Deployment will fail - MongoDB connection required")
     logger.error("=" * 80)
-    # Use localhost as fallback (will fail on Render, but shows the issue clearly)
-    MONGODB_URI = "mongodb://localhost:27017"
-    logger.warning(f"Using fallback MongoDB URI: {MONGODB_URI}")
+    # Fail fast instead of using localhost
+    raise RuntimeError("MONGODB_URI environment variable is required but not set")
+
+# Log only the host part (hide password)
+uri_parts = MONGODB_URI.split("@")
+if len(uri_parts) > 1:
+    logger.info(f"✅ MongoDB URI configured: ...@{uri_parts[1]}")
 else:
-    # Log only the host part (hide password)
-    uri_parts = MONGODB_URI.split("@")
-    if len(uri_parts) > 1:
-        logger.info(f"MongoDB URI configured: ...@{uri_parts[1]}")
-    else:
-        logger.info("MongoDB URI configured (local)")
+    logger.info("✅ MongoDB URI configured (local)")
 
 logger.info(f"Connecting to MongoDB...")
 client = AsyncIOMotorClient(MONGODB_URI)
 db = client.inventory_db
 products_collection = db.products
+logger.info("✅ MongoDB client initialized")
 
 # ============================================================================
 # STEP 3: MONGODB OBJECTID SERIALIZATION FIX
