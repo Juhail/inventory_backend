@@ -7,6 +7,10 @@ from bson import ObjectId
 import os
 import logging
 import traceback
+from dotenv import load_dotenv
+
+# Load environment variables from .env file (fallback)
+load_dotenv()
 
 # ============================================================================
 # STEP 1: ENABLE FULL ERROR LOGGING
