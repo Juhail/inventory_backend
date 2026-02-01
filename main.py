@@ -7,10 +7,6 @@ from bson import ObjectId
 import os
 import logging
 import traceback
-from dotenv import load_dotenv
-
-# Load environment variables from .env file (fallback)
-load_dotenv()
 
 # ============================================================================
 # STEP 1: ENABLE FULL ERROR LOGGING
@@ -36,58 +32,13 @@ app.add_middleware(
     allow_headers=["*"],
 )
 
-# ============================================================================
-# DEBUG: CHECK ALL ENVIRONMENT VARIABLES
-# ============================================================================
-logger.info("=" * 80)
-logger.info("ENVIRONMENT VARIABLES CHECK")
-logger.info("=" * 80)
-
-# Check for MONGODB_URI specifically
-mongodb_uri_value = os.getenv("MONGODB_URI")
-logger.info(f"MONGODB_URI exists: {mongodb_uri_value is not None}")
-
-if mongodb_uri_value:
-    # Show only first 20 chars and last 20 chars (hide password)
-    if len(mongodb_uri_value) > 40:
-        masked = mongodb_uri_value[:20] + "..." + mongodb_uri_value[-20:]
-    else:
-        masked = "***"
-    logger.info(f"MONGODB_URI value (masked): {masked}")
-else:
-    logger.error("MONGODB_URI is NOT SET!")
-    # List all env vars that contain "MONGO" or "URI"
-    logger.info("Checking for similar environment variables:")
-    for key in os.environ:
-        if "MONGO" in key.upper() or "URI" in key.upper():
-            logger.info(f"  Found: {key}")
-
-logger.info("=" * 80)
-
 # MongoDB Connection
-MONGODB_URI = os.getenv("MONGODB_URI")
-
-if not MONGODB_URI:
-    logger.error("=" * 80)
-    logger.error("CRITICAL: MONGODB_URI environment variable is NOT set!")
-    logger.error("Please set MONGODB_URI in Render dashboard → Environment tab")
-    logger.error("Deployment will fail - MongoDB connection required")
-    logger.error("=" * 80)
-    # Fail fast instead of using localhost
-    raise RuntimeError("MONGODB_URI environment variable is required but not set")
-
-# Log only the host part (hide password)
-uri_parts = MONGODB_URI.split("@")
-if len(uri_parts) > 1:
-    logger.info(f"✅ MongoDB URI configured: ...@{uri_parts[1]}")
-else:
-    logger.info("✅ MongoDB URI configured (local)")
-
-logger.info(f"Connecting to MongoDB...")
+MONGODB_URI = os.getenv("MONGODB_URI", "mongodb://localhost:27017")
 client = AsyncIOMotorClient(MONGODB_URI)
 db = client.inventory_db
 products_collection = db.products
-logger.info("✅ MongoDB client initialized")
+brands_collection = db.brands
+models_collection = db.models
 
 # ============================================================================
 # STEP 3: MONGODB OBJECTID SERIALIZATION FIX
@@ -137,6 +88,34 @@ class ProductCreate(BaseModel):
     stock: int
 
 
+class Brand(BaseModel):
+    id: Optional[str] = Field(None, alias="_id")
+    name: str
+
+    class Config:
+        populate_by_name = True
+        json_encoders = {ObjectId: str}
+
+
+class BrandCreate(BaseModel):
+    name: str
+
+
+class Model(BaseModel):
+    id: Optional[str] = Field(None, alias="_id")
+    brand: str
+    name: str
+
+    class Config:
+        populate_by_name = True
+        json_encoders = {ObjectId: str}
+
+
+class ModelCreate(BaseModel):
+    brand: str
+    name: str
+
+
 # ============================================================================
 # HELPER FUNCTION: CONVERT MONGODB DOC TO JSON-SAFE DICT
 # ============================================================================
@@ -156,6 +135,21 @@ def product_helper(product) -> dict:
         "model": product.get("model"),  # Can be None
         "price": float(product.get("price", 0.0)),
         "stock": int(product.get("stock", 0))
+    }
+
+
+def brand_helper(brand) -> dict:
+    return {
+        "id": str(brand["_id"]),
+        "name": brand["name"],
+    }
+
+
+def model_helper(model) -> dict:
+    return {
+        "id": str(model["_id"]),
+        "brand": model["brand"],
+        "name": model["name"],
     }
 
 
@@ -362,6 +356,80 @@ async def delete_product(product_id: str):
         logger.error(f"Error deleting product {product_id}: {str(e)}")
         logger.error(traceback.format_exc())
         raise HTTPException(status_code=500, detail=f"Failed to delete product: {str(e)}")
+
+
+# ============================================================================
+# BRAND AND MODEL MANAGEMENT
+# ============================================================================
+
+@app.get("/brands")
+async def get_brands():
+    """Get all available brands"""
+    brands = await brands_collection.find().to_list(1000)
+    return [brand_helper(brand) for brand in brands]
+
+
+@app.post("/brands")
+async def add_brand(brand: BrandCreate):
+    """Add a new brand if it doesn't exist"""
+    existing = await brands_collection.find_one({"name": brand.name})
+    if existing:
+        return brand_helper(existing)
+    
+    brand_dict = brand.model_dump()
+    result = await brands_collection.insert_one(brand_dict)
+    new_brand = await brands_collection.find_one({"_id": result.inserted_id})
+    return brand_helper(new_brand)
+
+
+@app.get("/models")
+async def get_models(brand: str):
+    """Get all models for a specific brand"""
+    models = await models_collection.find({"brand": brand}).to_list(1000)
+    return [model_helper(model) for model in models]
+
+
+@app.post("/models")
+async def add_model(model: ModelCreate):
+    """Add a new model to a brand if it doesn't exist"""
+    existing = await models_collection.find_one({"brand": model.brand, "name": model.name})
+    if existing:
+        return model_helper(existing)
+
+    model_dict = model.model_dump()
+    result = await models_collection.insert_one(model_dict)
+    new_model = await models_collection.find_one({"_id": result.inserted_id})
+    return model_helper(new_model)
+
+
+# ============================================================================
+# SEED DATA
+# ============================================================================
+
+@app.on_event("startup")
+async def seed_data():
+    """Seed initial brands and models if they don't exist"""
+    logger.info("Seeding initial brands and models...")
+    
+    brands = ["Apple", "Samsung", "Oppo"]
+    for b_name in brands:
+        if not await brands_collection.find_one({"name": b_name}):
+            await brands_collection.insert_one({"name": b_name})
+            logger.info(f"Seeded brand: {b_name}")
+
+    models_data = {
+        "Apple": ["iPhone 13", "iPhone 14", "iPhone 15"],
+        "Samsung": ["Galaxy S21", "Galaxy S22", "Galaxy S23"],
+        "Oppo": ["Reno 8", "Reno 9", "Find X5"]
+    }
+
+    for brand, models in models_data.items():
+        for m_name in models:
+            if not await models_collection.find_one({"brand": brand, "name": m_name}):
+                await models_collection.insert_one({"brand": brand, "name": m_name})
+                logger.info(f"Seeded model: {brand} {m_name}")
+    
+    logger.info("Seeding complete.")
 
 
 if __name__ == "__main__":
