@@ -7,6 +7,10 @@ from bson import ObjectId
 import os
 import logging
 import traceback
+from dotenv import load_dotenv
+
+# Load environment variables
+load_dotenv()
 
 # ============================================================================
 # STEP 1: ENABLE FULL ERROR LOGGING
@@ -33,7 +37,14 @@ app.add_middleware(
 )
 
 # MongoDB Connection
-MONGODB_URI = os.getenv("MONGODB_URI", "mongodb://localhost:27017")
+# MongoDB Connection
+MONGODB_URI = os.getenv("MONGODB_URI")
+
+# CRITICAL SECURITY CHECK
+if not MONGODB_URI:
+    logger.critical("MONGODB_URI environment variable is NOT set!")
+    raise RuntimeError("MONGODB_URI environment variable is required. Check .env or Render settings.")
+
 client = AsyncIOMotorClient(MONGODB_URI)
 db = client.inventory_db
 products_collection = db.products
