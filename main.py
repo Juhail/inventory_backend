@@ -33,7 +33,25 @@ app.add_middleware(
 )
 
 # MongoDB Connection
-MONGODB_URI = os.getenv("MONGODB_URI", "mongodb://localhost:27017")
+MONGODB_URI = os.getenv("MONGODB_URI")
+
+if not MONGODB_URI:
+    logger.error("=" * 80)
+    logger.error("CRITICAL: MONGODB_URI environment variable is NOT set!")
+    logger.error("Please set MONGODB_URI in Render dashboard → Environment tab")
+    logger.error("=" * 80)
+    # Use localhost as fallback (will fail on Render, but shows the issue clearly)
+    MONGODB_URI = "mongodb://localhost:27017"
+    logger.warning(f"Using fallback MongoDB URI: {MONGODB_URI}")
+else:
+    # Log only the host part (hide password)
+    uri_parts = MONGODB_URI.split("@")
+    if len(uri_parts) > 1:
+        logger.info(f"MongoDB URI configured: ...@{uri_parts[1]}")
+    else:
+        logger.info("MongoDB URI configured (local)")
+
+logger.info(f"Connecting to MongoDB...")
 client = AsyncIOMotorClient(MONGODB_URI)
 db = client.inventory_db
 products_collection = db.products
