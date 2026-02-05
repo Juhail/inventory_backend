@@ -83,6 +83,7 @@ class Product(BaseModel):
     model: Optional[str] = None  # Optional field
     price: float
     stock: int
+    barcode: Optional[str] = None  # Barcode/QR code for scanning
 
     class Config:
         populate_by_name = True
@@ -97,6 +98,7 @@ class ProductCreate(BaseModel):
     model: Optional[str] = None
     price: float
     stock: int
+    barcode: Optional[str] = None  # Barcode/QR code for scanning
 
 
 class Brand(BaseModel):
@@ -145,7 +147,8 @@ def product_helper(product) -> dict:
         "category": product.get("category", ""),
         "model": product.get("model"),  # Can be None
         "price": float(product.get("price", 0.0)),
-        "stock": int(product.get("stock", 0))
+        "stock": int(product.get("stock", 0)),
+        "barcode": product.get("barcode")  # Can be None (migration safe)
     }
 
 
@@ -266,6 +269,15 @@ async def add_product(product: ProductCreate):
     try:
         logger.info(f"POST /products - Adding product: {product.name}")
         
+        # ============================================================================
+        # STOCK VALIDATION: Prevent negative stock
+        # ============================================================================
+        if product.stock < 0:
+            raise HTTPException(
+                status_code=400, 
+                detail=f"Stock cannot be negative. Provided: {product.stock}"
+            )
+        
         product_dict = product.model_dump(exclude_unset=True)
         
         result = await products_collection.insert_one(product_dict)
@@ -321,6 +333,15 @@ async def update_product(product_id: str, product: ProductCreate):
         
         if not ObjectId.is_valid(product_id):
             raise HTTPException(status_code=400, detail="Invalid product ID format")
+        
+        # ============================================================================
+        # STOCK VALIDATION: Prevent negative stock
+        # ============================================================================
+        if product.stock < 0:
+            raise HTTPException(
+                status_code=400, 
+                detail=f"Stock cannot be negative. Provided: {product.stock}"
+            )
         
         product_dict = product.model_dump(exclude_unset=True)
         
@@ -411,6 +432,76 @@ async def add_model(model: ModelCreate):
     result = await models_collection.insert_one(model_dict)
     new_model = await models_collection.find_one({"_id": result.inserted_id})
     return model_helper(new_model)
+
+
+@app.put("/brands/{brand_id}")
+async def update_brand(brand_id: str, brand: BrandCreate):
+    """Update a brand name"""
+    if not ObjectId.is_valid(brand_id):
+        raise HTTPException(status_code=400, detail="Invalid brand ID format")
+    
+    result = await brands_collection.update_one(
+        {"_id": ObjectId(brand_id)},
+        {"$set": {"name": brand.name}}
+    )
+    
+    if result.matched_count == 0:
+        raise HTTPException(status_code=404, detail="Brand not found")
+        
+    updated_brand = await brands_collection.find_one({"_id": ObjectId(brand_id)})
+    return brand_helper(updated_brand)
+
+
+@app.delete("/brands/{brand_id}")
+async def delete_brand(brand_id: str):
+    """Delete a brand if no models exist for it"""
+    if not ObjectId.is_valid(brand_id):
+        raise HTTPException(status_code=400, detail="Invalid brand ID format")
+    
+    brand = await brands_collection.find_one({"_id": ObjectId(brand_id)})
+    if not brand:
+        raise HTTPException(status_code=404, detail="Brand not found")
+
+    brand_name = brand["name"]
+    # Check for dependent models
+    model_count = await models_collection.count_documents({"brand": brand_name})
+    if model_count > 0:
+         raise HTTPException(status_code=400, detail=f"Cannot delete brand '{brand_name}' because it has {model_count} models associated with it.")
+
+    await brands_collection.delete_one({"_id": ObjectId(brand_id)})
+    return {"message": "Brand deleted successfully", "id": brand_id}
+
+
+@app.put("/models/{model_id}")
+async def update_model(model_id: str, model: ModelCreate):
+    """Update a model name"""
+    if not ObjectId.is_valid(model_id):
+        raise HTTPException(status_code=400, detail="Invalid model ID format")
+    
+    result = await models_collection.update_one(
+        {"_id": ObjectId(model_id)},
+        {"$set": {"name": model.name, "brand": model.brand}}
+    )
+    
+    if result.matched_count == 0:
+        raise HTTPException(status_code=404, detail="Model not found")
+        
+    updated_model = await models_collection.find_one({"_id": ObjectId(model_id)})
+    return model_helper(updated_model)
+
+
+@app.delete("/models/{model_id}")
+async def delete_model(model_id: str):
+    """Delete a model"""
+    if not ObjectId.is_valid(model_id):
+        raise HTTPException(status_code=400, detail="Invalid model ID format")
+
+    result = await models_collection.delete_one({"_id": ObjectId(model_id)})
+    
+    if result.deleted_count == 0:
+        raise HTTPException(status_code=404, detail="Model not found")
+    
+    return {"message": "Model deleted successfully", "id": model_id}
 
 
 # ============================================================================
